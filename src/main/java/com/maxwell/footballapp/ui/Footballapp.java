@@ -36,28 +36,31 @@ public class Footballapp extends Application {
     private ListView<String> leaderboardList = new ListView<>();
     private WebSocketClient wsClient;
     private String username;
-    private String password;
+
+    public Footballapp() {} // default constructor
+
+
+    public Footballapp(String username) {
+        this.username = username;
+    }
+    
+    public void setUsername(String username) {
+        this.username = username;
+    }
 
     @Override
     public void start(Stage primaryStage) {
-        // Prompt for login
-        TextInputDialog usernameDialog = new TextInputDialog();
-        usernameDialog.setTitle("Login");
-        usernameDialog.setHeaderText("Enter username");
-        username = usernameDialog.showAndWait().orElse("Player1");
+        if (username == null || username.isEmpty()) {
+            showAlert("Username not set! Please login first");
+            return;
+        }
 
-        TextInputDialog passwordDialog = new TextInputDialog();
-        passwordDialog.setTitle("Login");
-        passwordDialog.setHeaderText("Enter password");
-        password = passwordDialog.showAndWait().orElse("password");
-
-        // Match details labels
+        // Match labels
         Label lblHome = new Label("Home: ");
         Label lblAway = new Label("Away: ");
         Label lblStatus = new Label("Status: ");
         Label lblScore = new Label("Score: ");
 
-        // Betting buttons
         Button btnHome = new Button("Bet Home Win");
         Button btnAway = new Button("Bet Away Win");
         Button btnDraw = new Button("Bet Draw");
@@ -66,7 +69,6 @@ public class Footballapp extends Application {
         VBox matchDetailsBox = new VBox(10, lblHome, lblAway, lblStatus, lblScore, betButtons);
         matchDetailsBox.setStyle("-fx-padding: 20; -fx-font-size: 14;");
 
-        // Update match details on selection
         matchList.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
             if (newVal != null) {
                 lblHome.setText("Home: " + newVal.getHome());
@@ -76,18 +78,14 @@ public class Footballapp extends Application {
             }
         });
 
-        // Betting actions
         btnHome.setOnAction(e -> placeBet("HOME"));
         btnAway.setOnAction(e -> placeBet("AWAY"));
         btnDraw.setOnAction(e -> placeBet("DRAW"));
 
-        // Leaderboard section
         VBox leaderboardBox = new VBox(10, new Label("Leaderboard"), leaderboardList);
         leaderboardBox.setStyle("-fx-padding: 20; -fx-font-size: 14;");
 
-        // Layout
-        SplitPane splitPane = new SplitPane();
-        splitPane.getItems().addAll(matchList, matchDetailsBox, leaderboardBox);
+        SplitPane splitPane = new SplitPane(matchList, matchDetailsBox, leaderboardBox);
         splitPane.setDividerPositions(0.4, 0.7);
 
         Scene scene = new Scene(splitPane, 1000, 500);
@@ -95,10 +93,7 @@ public class Footballapp extends Application {
         primaryStage.setScene(scene);
         primaryStage.show();
 
-        // Load matches
         loadMatches();
-
-        // Connect WebSocket
         connectWebSocket();
     }
 
@@ -110,6 +105,7 @@ public class Footballapp extends Application {
 
             List<Match> matches = Match.fromJson(fixturesJson, bootstrapJson);
             matchList.getItems().addAll(matches);
+
         } catch (Exception e) {
             e.printStackTrace();
             showAlert("Error fetching matches: " + e.getMessage());
@@ -121,32 +117,27 @@ public class Footballapp extends Application {
             wsClient = new WebSocketClient(new URI("ws://localhost:8887")) {
                 @Override
                 public void onOpen(ServerHandshake handshake) {
-                    System.out.println("Connected to server");
-                    send("JOIN:" + username + ":" + password);
+                    System.out.println("Connected to leaderboard server!");
+                    send("JOIN:" + username);
                 }
 
                 @Override
                 public void onMessage(String message) {
-                    if (message.startsWith("JOIN_FAIL")) {
+                    try {
+                        List<Map<String, Object>> leaderboard = gson.fromJson(
+                                message, new TypeToken<List<Map<String, Object>>>() {}.getType()
+                        );
                         Platform.runLater(() -> {
-                            showAlert(message);
-                            System.exit(0);
+                            leaderboardList.getItems().clear();
+                            for (Map<String, Object> entry : leaderboard) {
+                                String name = (String) entry.get("name");
+                                int points = ((Double) entry.get("points")).intValue();
+                                leaderboardList.getItems().add(name + " - " + points + " pts");
+                            }
                         });
-                        return;
+                    } catch (Exception ex) {
+                        ex.printStackTrace();
                     }
-
-                    List<Map<String, Object>> leaderboard = gson.fromJson(
-                            message, new TypeToken<List<Map<String, Object>>>() {}.getType()
-                    );
-
-                    Platform.runLater(() -> {
-                        leaderboardList.getItems().clear();
-                        for (Map<String, Object> entry : leaderboard) {
-                            String name = (String) entry.get("username");
-                            int points = ((Double) entry.get("points")).intValue();
-                            leaderboardList.getItems().add(name + " - " + points + " pts");
-                        }
-                    });
                 }
 
                 @Override
@@ -162,7 +153,7 @@ public class Footballapp extends Application {
             wsClient.connect();
         } catch (Exception e) {
             e.printStackTrace();
-            showAlert("Error connecting to server: " + e.getMessage());
+            showAlert("Error connecting to WebSocket: " + e.getMessage());
         }
     }
 
@@ -172,7 +163,6 @@ public class Footballapp extends Application {
             showAlert("Select a match first!");
             return;
         }
-
         String msg = "BET:" + username + ":" + selected.getId() + ":" + betType;
         wsClient.send(msg);
         showAlert("Bet placed: " + selected.getHome() + " vs " + selected.getAway() + " -> " + betType);
@@ -186,6 +176,8 @@ public class Footballapp extends Application {
         launch(args);
     }
 }
+
+
 
 
 

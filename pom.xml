@@ -4,6 +4,7 @@
                              http://maven.apache.org/maven-v4_0_0.xsd">
 
     <modelVersion>4.0.0</modelVersion>
+
     <groupId>com.maxwell</groupId>
     <artifactId>footballapp</artifactId>
     <version>1.0-SNAPSHOT</version>
@@ -63,11 +64,7 @@
                 <artifactId>javafx-maven-plugin</artifactId>
                 <version>0.0.8</version>
                 <configuration>
-                    <mainClass>com.maxwell.footballapp.ui.FootballApp</mainClass>
-                    <options>
-                        <option>--add-modules</option>
-                        <option>javafx.controls,javafx.fxml</option>
-                    </options>
+                    <mainClass>com.maxwell.footballapp.ui.LoginApp</mainClass>
                 </configuration>
             </plugin>
         </plugins>

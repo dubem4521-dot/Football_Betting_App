@@ -12,85 +12,55 @@ package com.maxwell.footballapp.server;
 
 import com.google.gson.Gson;
 import com.google.gson.reflect.TypeToken;
-import com.maxwell.footballapp.model.Match;
-import com.maxwell.footballapp.service.FootballApiService;
-import java.io.*;
-import java.nio.file.*;
-import java.security.MessageDigest;
-import java.util.*;
-import java.util.concurrent.*;
-import org.java_websocket.server.WebSocketServer;
 import org.java_websocket.WebSocket;
 import org.java_websocket.handshake.ClientHandshake;
+import org.java_websocket.server.WebSocketServer;
+
+import java.io.*;
 import java.net.InetSocketAddress;
-
-// Player data with password hash
-class Player {
-    String username;
-    String passwordHash;
-    Map<Integer, String> bets = new HashMap<>();
-    int points = 0;
-
-    Player(String username, String passwordHash) {
-        this.username = username;
-        this.passwordHash = passwordHash;
-    }
-}
+import java.util.*;
 
 public class LeaderboardServer extends WebSocketServer {
 
-    private final Map<String, Player> players = new ConcurrentHashMap<>();
+    private final Map<String, Integer> userPoints = new HashMap<>();
+    private final Map<String, String> bets = new HashMap<>(); // "username:matchId" -> betType
     private final Gson gson = new Gson();
-    private final FootballApiService apiService = new FootballApiService();
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-    private final Path playerFile = Paths.get("players.json");
+    private final File pointsFile = new File("points.json");
+    private final File betsFile = new File("bets.json");
 
     public LeaderboardServer(int port) {
         super(new InetSocketAddress(port));
-        loadPlayers();
+        loadPoints();
+        loadBets();
     }
 
     @Override
     public void onOpen(WebSocket conn, ClientHandshake handshake) {
-        conn.send("Welcome! Send your username and password to join (JOIN:username:password).");
+        System.out.println("Client connected: " + conn.getRemoteSocketAddress());
+    }
+
+    @Override
+    public void onClose(WebSocket conn, int code, String reason, boolean remote) {
+        System.out.println("Client disconnected: " + conn.getRemoteSocketAddress());
     }
 
     @Override
     public void onMessage(WebSocket conn, String message) {
         try {
             if (message.startsWith("JOIN:")) {
-                String[] parts = message.split(":");
-                String username = parts[1];
-                String password = parts[2];
-                String hash = hash(password);
-
-                Player p = players.get(username);
-                if (p == null) {
-                    // New player
-                    p = new Player(username, hash);
-                    players.put(username, p);
-                    conn.send("JOIN_SUCCESS");
-                    savePlayers();
-                } else {
-                    // Existing player
-                    if (!p.passwordHash.equals(hash)) {
-                        conn.send("JOIN_FAIL:Incorrect password");
-                        return;
-                    }
-                    conn.send("JOIN_SUCCESS");
-                }
-                broadcastLeaderboard();
-
+                String username = message.substring(5);
+                userPoints.putIfAbsent(username, 0); // new users get 0 points
+                sendLeaderboard();
             } else if (message.startsWith("BET:")) {
+                // Format: BET:username:matchId:betType
                 String[] parts = message.split(":");
-                String username = parts[1];
-                int matchId = Integer.parseInt(parts[2]);
-                String bet = parts[3];
+                if (parts.length == 4) {
+                    String username = parts[1];
+                    String matchId = parts[2];
+                    String betType = parts[3];
 
-                Player p = players.get(username);
-                if (p != null) {
-                    p.bets.put(matchId, bet);
-                    savePlayers();
+                    bets.put(username + ":" + matchId, betType);
+                    saveBets();
                 }
             }
         } catch (Exception e) {
@@ -99,96 +69,88 @@ public class LeaderboardServer extends WebSocketServer {
     }
 
     @Override
-    public void onClose(WebSocket conn, int code, String reason, boolean remote) { }
-
-    @Override
-    public void onError(WebSocket conn, Exception ex) { ex.printStackTrace(); }
+    public void onError(WebSocket conn, Exception ex) {
+        ex.printStackTrace();
+    }
 
     @Override
     public void onStart() {
         System.out.println("Leaderboard server started!");
-        scheduler.scheduleAtFixedRate(this::updateResults, 0, 1, TimeUnit.MINUTES);
+        setConnectionLostTimeout(0);
+        setConnectionLostTimeout(100);
     }
 
-    private void updateResults() {
+    private void sendLeaderboard() {
         try {
-            String json = apiService.fetchFixtures();
-            String bootstrapJson = apiService.fetchBootstrap();
-            List<Match> matches = Match.fromJson(json, bootstrapJson);
-
-            for (Match m : matches) {
-                if (!m.getStatus().equalsIgnoreCase("FINISHED")) continue;
-
-                for (Player p : players.values()) {
-                    String bet = p.bets.get(m.getId());
-                    if (bet == null) continue;
-
-                    String result = calculateResult(m);
-                    if (bet.equals(result)) p.points += 3;
-                }
+            List<Map<String, Object>> leaderboard = new ArrayList<>();
+            for (Map.Entry<String, Integer> entry : userPoints.entrySet()) {
+                Map<String, Object> user = new HashMap<>();
+                user.put("name", entry.getKey());
+                user.put("points", entry.getValue());
+                leaderboard.add(user);
             }
-            savePlayers();
-            broadcastLeaderboard();
+
+            String json = gson.toJson(leaderboard);
+            broadcast(json);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private String calculateResult(Match m) {
-        String[] scores = m.getScore().split("[:\\-]");
-        int home = Integer.parseInt(scores[0].trim());
-        int away = Integer.parseInt(scores[1].trim());
-        if (home > away) return "HOME";
-        else if (away > home) return "AWAY";
-        else return "DRAW";
-    }
-
-    private void broadcastLeaderboard() {
-        List<Map<String, Object>> leaderboard = new ArrayList<>();
-        for (Player p : players.values()) {
-            Map<String, Object> entry = new HashMap<>();
-            entry.put("username", p.username);
-            entry.put("points", p.points);
-            leaderboard.add(entry);
-        }
-        leaderboard.sort((a, b) -> (int)b.get("points") - (int)a.get("points"));
-        String json = gson.toJson(leaderboard);
-
-        for (WebSocket conn : getConnections()) {
-            conn.send(json);
-        }
-    }
-
-    private void savePlayers() {
-        try (Writer writer = Files.newBufferedWriter(playerFile)) {
-            gson.toJson(players, writer);
-        } catch (IOException e) {
+    private void loadPoints() {
+        if (!pointsFile.exists()) return;
+        try (Reader reader = new FileReader(pointsFile)) {
+            Map<String, Double> map = gson.fromJson(reader, new TypeToken<Map<String, Double>>() {}.getType());
+            if (map != null) {
+                map.forEach((k, v) -> userPoints.put(k, v.intValue()));
+            }
+        } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private void loadPlayers() {
-        if (!Files.exists(playerFile)) return;
-        try (Reader reader = Files.newBufferedReader(playerFile)) {
-            Map<String, Player> loaded = gson.fromJson(reader, new TypeToken<Map<String, Player>>(){}.getType());
-            if (loaded != null) players.putAll(loaded);
-        } catch (IOException e) {
+    private void savePoints() {
+        try (Writer writer = new FileWriter(pointsFile)) {
+            gson.toJson(userPoints, writer);
+        } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
-    private String hash(String input) throws Exception {
-        MessageDigest md = MessageDigest.getInstance("SHA-256");
-        byte[] hashed = md.digest(input.getBytes("UTF-8"));
-        StringBuilder sb = new StringBuilder();
-        for (byte b : hashed) sb.append(String.format("%02x", b));
-        return sb.toString();
+    private void loadBets() {
+        if (!betsFile.exists()) return;
+        try (Reader reader = new FileReader(betsFile)) {
+            Map<String, String> map = gson.fromJson(reader, new TypeToken<Map<String, String>>() {}.getType());
+            if (map != null) {
+                bets.putAll(map);
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    private void saveBets() {
+        try (Writer writer = new FileWriter(betsFile)) {
+            gson.toJson(bets, writer);
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // Call this method after updating match results to update points
+    public void updatePoints(String username, int pointsEarned) {
+        userPoints.put(username, userPoints.getOrDefault(username, 0) + pointsEarned);
+        savePoints();
+        sendLeaderboard();
     }
 
     public static void main(String[] args) {
-        new LeaderboardServer(8887).start();
+        int port = 8887;
+        LeaderboardServer server = new LeaderboardServer(port);
+        server.start();
     }
 }
+
 
 
 
